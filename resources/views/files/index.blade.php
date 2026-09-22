@@ -7,7 +7,7 @@
 <div class="fm-pagehead">
   <div>
     <h1><i class="fas fa-folder-open mr-2"></i>Daftar File</h1>
-    <p>Kelola semua file yang telah di-upload dalam satu tempat.</p>
+    <p>Kelola semua file Anda — pilih file untuk aksi massal.</p>
   </div>
   <div>
     <a href="{{ route('files.create') }}" class="btn btn-success">
@@ -103,10 +103,11 @@
           </select>
         </div>
         <div class="col-lg-1 col-md-1 col-6 mb-2">
-          <label for="direction">Arah</label>
-          <select id="direction" name="direction" class="form-select w-100">
-            <option value="asc" @selected(request('direction') == 'asc')>↑</option>
-            <option value="desc" @selected(request('direction') == 'desc')>↓</option>
+          <label for="per_page">Per Hal.</label>
+          <select id="per_page" name="per_page" class="form-select w-100">
+            @foreach ([10, 25, 50, 100] as $opt)
+              <option value="{{ $opt }}" @selected((int) request('per_page', 10) === $opt)>{{ $opt }}</option>
+            @endforeach
           </select>
         </div>
         <div class="col-12 d-flex mt-2" style="gap:.5rem;">
@@ -121,6 +122,31 @@
     </form>
   </div>
 
+  <!-- Bulk Actions -->
+  <div class="px-4 py-2 border-bottom d-flex flex-wrap align-items-center" style="gap:.5rem; background:#f8fafc;">
+    <span class="text-fm-muted" style="font-size:.8rem; font-weight:600;"><i class="fas fa-layer-group mr-1"></i> Aksi Massal:</span>
+    <form id="bulk-form" method="POST" action="{{ route('files.bulk') }}" class="d-flex flex-wrap align-items-center" style="gap:.5rem;">
+      @csrf
+      <input type="hidden" name="action" id="bulk-action" value="delete">
+      <select name="category" id="bulk-category" class="form-select form-select-sm d-none" style="width:auto;">
+        <option value="">-- Pilih kategori --</option>
+        @foreach ($categories as $cat)
+          <option value="{{ $cat->id }}">{{ $cat->name }}</option>
+        @endforeach
+      </select>
+      <button type="submit" class="btn btn-sm btn-secondary" data-bulk="download" disabled>
+        <i class="fas fa-file-zipper mr-1"></i> Download ZIP
+      </button>
+      <button type="submit" class="btn btn-sm btn-secondary" data-bulk="category" disabled>
+        <i class="fas fa-tags mr-1"></i> Pindah Kategori
+      </button>
+      <button type="submit" class="btn btn-sm btn-danger" data-bulk="delete" disabled>
+        <i class="fas fa-trash mr-1"></i> Hapus
+      </button>
+    </form>
+    <span id="bulk-count" class="badge badge-muted ml-auto">0 dipilih</span>
+  </div>
+
   <!-- Table -->
   <div class="px-4 py-3">
     <div class="d-flex align-items-center mb-3">
@@ -131,6 +157,7 @@
       <table class="table fm-table align-middle">
         <thead>
           <tr>
+            <th style="width:36px;"><input type="checkbox" id="select-all" title="Pilih semua"></th>
             <th>Nama File</th>
             <th>Kategori</th>
             <th>Ukuran</th>
@@ -141,6 +168,7 @@
         <tbody>
           @forelse ($files as $file)
           <tr>
+            <td><input type="checkbox" class="row-check" name="ids[]" value="{{ $file->id }}" form="bulk-form"></td>
             <td>
               @php
                 $ext = $file->extension;
@@ -161,7 +189,7 @@
               <div class="fm-filecell">
                 <span class="fm-fileicon {{ $colorClass }}"><i class="fas {{ $iconClass }}"></i></span>
                 <span class="fm-filename">
-                  {{ $file->original_name }}
+                  <a href="{{ route('files.show', $file) }}" class="stretched-link" style="position:static;">{{ $file->original_name }}</a>
                   <small>{{ strtoupper($ext ?: 'FILE') }}</small>
                 </span>
               </div>
@@ -177,14 +205,22 @@
             <td class="text-nowrap">{{ $file->human_size }}</td>
             <td class="text-nowrap text-fm-muted">{{ \Carbon\Carbon::parse($file->created_at)->locale('id')->isoFormat('D MMM Y') }}</td>
             <td class="text-right text-nowrap">
-              <a href="{{ route('files.download', $file) }}" class="btn btn-sm btn-primary" title="Download {{ $file->original_name }}">
+              <a href="{{ route('files.download', $file) }}" class="btn btn-sm btn-primary" title="Download">
                 <i class="fas fa-download"></i>
               </a>
+              <form method="POST" action="{{ route('files.destroy', $file) }}" class="d-inline"
+                    onsubmit="return confirm('Pindahkan file &quot;{{ $file->original_name }}&quot; ke trash?')">
+                @csrf
+                @method('DELETE')
+                <button type="submit" class="btn btn-sm btn-danger" title="Hapus (ke trash)">
+                  <i class="fas fa-trash"></i>
+                </button>
+              </form>
             </td>
           </tr>
           @empty
           <tr>
-            <td colspan="5">
+            <td colspan="6">
               <div class="fm-empty">
                 <i class="fas fa-inbox"></i>
                 <h5 class="font-weight-bold" style="color:var(--fm-ink-soft);">Belum ada file</h5>
@@ -209,3 +245,53 @@
   @endif
 </div>
 @endsection
+
+@push('scripts')
+<script>
+  (function () {
+    var form = document.getElementById('bulk-form');
+    var actionInput = document.getElementById('bulk-action');
+    var categorySelect = document.getElementById('bulk-category');
+    var countBadge = document.getElementById('bulk-count');
+    var buttons = form.querySelectorAll('[data-bulk]');
+    var checks = document.querySelectorAll('.row-check');
+    var selectAll = document.getElementById('select-all');
+
+    function selected() {
+      return Array.prototype.filter.call(checks, function (c) { return c.checked; });
+    }
+
+    function refresh() {
+      var n = selected().length;
+      countBadge.textContent = n + ' dipilih';
+      buttons.forEach(function (b) { b.disabled = n === 0; });
+    }
+
+    selectAll.addEventListener('change', function () {
+      checks.forEach(function (c) { c.checked = selectAll.checked; });
+      refresh();
+    });
+
+    checks.forEach(function (c) { c.addEventListener('change', refresh); });
+
+    buttons.forEach(function (b) {
+      b.addEventListener('click', function () {
+        actionInput.value = b.getAttribute('data-bulk');
+        categorySelect.classList.toggle('d-none', actionInput.value !== 'category');
+
+        if (actionInput.value === 'delete') {
+          var n = selected().length;
+          if (!confirm('Pindahkan ' + n + ' file ke trash?')) {
+            event.preventDefault();
+            return;
+          }
+        }
+        if (actionInput.value === 'category' && !categorySelect.value) {
+          alert('Pilih kategori tujuan terlebih dahulu.');
+          event.preventDefault();
+        }
+      });
+    });
+  })();
+</script>
+@endpush
